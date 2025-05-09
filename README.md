@@ -5,4 +5,10 @@ factors, and it may be limited in settings where proxy information is incomplete
 
 This project seeks to evaluate the contexts in which BISG can be trusted, explore alternative proxy estimation methods, and test the robustness of various proxy estimation methods under varying
 conditions for surname and geocode. In doing so, the project aims to enhance the reliability of bias detection in algorithmic decision-making and ensure more transparent, equitable outcomes in public
-and regulatory settings.
+and regulatory settings. The proxy estimation methods assessed in this project were: 
+
+- **BISG** – Bayesian Improved Surname Geocoding  
+- **BIFSG** – Bayesian Improved First Name and Surname Geocoding
+- **fBISG** – Fully Bayesian Improved Surname Geocoding  
+- **cBISG** – Contextual BISG
+- **ZRP** – Zest Race Predictor
