@@ -1,0 +1,412 @@
+---
+title: "DATA2050_WRU"
+author: "Yixun Kang"
+date: "2025-03-04"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Install packages
+
+```{r, message=FALSE}
+library(devtools)
+library(wru)
+#library(zipWRUext2)
+#devtools::install_github("https://github.com/jcuriel-unc/zipWRUext", subdir = "zipWRUext2")
+library(MLmetrics)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(gridExtra)
+```
+
+## Data Preprocessing
+
+```{r}
+# Remove surname = CRICKENBERGER and zcta = 27877
+# Remove zcta in 23845, 23917, 24148, 30546, 37821
+# Remove 46 rows with NA in BIFSG
+data = read.csv("data.csv") # this is the cleaned/filtered data with 6975377 obs
+# Map party
+small_parties = c("NLB", "GRE", "WTP", "CST", "JFA", "UNA")
+data$party_cd = ifelse(data$party_cd %in% small_parties, "IND", data$party_cd)
+```
+
+## WRU: BISG, fBISG, and BIFSG
+
+```{r}
+# BISG
+Sys.setenv(CENSUS_API_KEY = "f22603397c6685d1c71d15779b942c97c0624004")
+wru_bisg = wru::predict_race(data, 
+                             census.surname = TRUE, 
+                             census.geo = "zcta", 
+                             census.key = Sys.getenv("CENSUS_API_KEY"),
+                             census.data = get_census_data(key = Sys.getenv("CENSUS_API_KEY"),
+                                                           states = "NC", 
+                                                           sex = FALSE,
+                                                           year = "2020",
+                                                           census.geo = "zcta",
+                                                           retry = 3,
+                                                           county.list = NULL),
+                             year = "2020",
+                             retry = 3,
+                             skip_bad_geos = TRUE,
+                             model = "BISG",
+                             impute.missing = FALSE)
+```
+
+```{r}
+# fBISG
+wru_fbisg = wru::predict_race(data, 
+                              census.surname = TRUE, 
+                              census.geo = "zcta", 
+                              census.key = Sys.getenv("CENSUS_API_KEY"),
+                              census.data = get_census_data(key = Sys.getenv("CENSUS_API_KEY"),
+                                                            states = "NC", 
+                                                            sex = FALSE,
+                                                            year = "2020",
+                                                            census.geo = "zcta",
+                                                            retry = 3,
+                                                            county.list = NULL),
+                              year = "2020",
+                              retry = 3,
+                              skip_bad_geos = TRUE,
+                              model = "fBISG",
+                              impute.missing = FALSE,
+                              control = list(seed = 123))
+```
+
+```{r}
+# BIFSG
+wru_bifsg = wru::predict_race(data, 
+                              census.surname = TRUE, 
+                              census.geo = "zcta", 
+                              census.key = Sys.getenv("CENSUS_API_KEY"),
+                              census.data = get_census_data(key = Sys.getenv("CENSUS_API_KEY"),
+                                                            states = "NC", 
+                                                            sex = FALSE,
+                                                            year = "2020",
+                                                            census.geo = "zcta",
+                                                            retry = 3,
+                                                            county.list = NULL),
+                              year = "2020",
+                              retry = 3,
+                              skip_bad_geos = TRUE,
+                              model = "BISG",
+                              impute.missing = FALSE,
+                              names.to.use = "surname, first")
+```
+
+## Weighted Estimator
+
+```{r}
+weighted_estimator = function(df, outcome, outcome_value, race_col = NULL, races = NULL, type) {
+  outcome_mask = df[[outcome]] == outcome_value
+  if (type == "pred") {
+    df_race = df[, races]
+    df_outcome = df_race[outcome_mask, ]
+    n = colSums(df_outcome)
+    d = colSums(df_race)
+    we = n / d
+  } else if (type == "actual") {
+    df_outcome = df[outcome_mask, ]
+    n = table(df_outcome[[race_col]])
+    d = table(df[[race_col]])
+    we = n / d
+    race_order = c("white", "black", "hispanic", "api", "other")
+    we = as.numeric(we[race_order])
+    names(we) = race_order
+  } else {
+    stop("Must have a type")
+  }
+  return(we)
+}
+```
+
+```{r}
+# Predicted weighted estimator
+# Using BISG result as an example
+outcome_values = c("DEM", "REP", "LIB", "IND")
+races = c("pred.whi", "pred.bla", "pred.his", "pred.asi", "pred.oth")
+matrix = matrix(NA, nrow = length(races), ncol = length(outcome_values))
+rownames(matrix) = races
+colnames(matrix) = outcome_values
+for (i in seq_along(outcome_values)) {
+  party = outcome_values[i]
+  we = weighted_estimator(wru_bisg, "party_cd", party, NULL, races, "pred")
+  matrix[, party] = round(we, 5)
+}
+pred_wes = as.data.frame(matrix)
+#write.csv(pred_wes, "file_name", row.names = TRUE)
+```
+
+```{r}
+# Actual weighted estimator
+matrix = matrix(NA, nrow = 5, ncol = 4)
+rownames(matrix) = races
+colnames(matrix) = outcome_values
+for (i in seq_along(outcome_values)) {
+  party = outcome_values[i]
+  we = weighted_estimator(data, "party_cd", party, "true_race", NULL, "actual")
+  matrix[, party] = round(we, 5)
+}
+actual_wes = as.data.frame(matrix)
+#write.csv(actual_wes, "file_name", row.names = TRUE)
+```
+
+## Surname Perturbation on 5%, 10% and 20% of the data
+
+- Can also do perturbation combinations like 5% surname perturbation + 5% ZCTA perturbation
+- Use the code in python to export the ZCTA perturbed data sets and change the data used in `data_xyz = data %>% mutate(row_id = row_number())`, for example, `data_xyz = data_20 %>% mutate(row_id = row_number())`, where data_20 is the exported data set with 20% ZCTA perturbation
+- NOTE: if using ZCTA perturbed data sets like data_20, do this first:
+  - `data_20 = read.csv("data_zp_20.csv")`
+  - `data_20 = data_20 %>% select(-zcta) %>% rename(zcta = Swapped_zcta)`
+
+```{r}
+set.seed(123)
+
+# Change data to ZCTA perturbed data sets if doing perturbation combinations 
+# Below is an example of surname perturbation only
+data_xyz = data %>% mutate(row_id = row_number())
+
+n_total = nrow(data_xyz)
+
+# Change the perturbation percentage to 0.05 or 0.2
+n_select = floor(0.1 * n_total)
+
+select_id = sample(data_xyz$row_id, n_select)
+data_xyz$surname = ifelse(data_xyz$row_id %in% select_id,
+                          paste0(data_xyz$surname, "xyz"),
+                          data_xyz$surname)
+```
+
+```{r}
+# BISG
+wru_bisg = wru::predict_race(data_xyz, 
+                             census.surname = TRUE, 
+                             census.geo = "zcta", 
+                             census.key = Sys.getenv("CENSUS_API_KEY"),
+                             census.data = get_census_data(key = Sys.getenv("CENSUS_API_KEY"),
+                                                           states = "NC", 
+                                                           sex = FALSE,
+                                                           year = "2020",
+                                                           census.geo = "zcta",
+                                                           retry = 3,
+                                                           county.list = NULL),
+                             year = "2020",
+                             retry = 3,
+                             skip_bad_geos = TRUE,
+                             model = "BISG",
+                             impute.missing = FALSE)
+wru_bisg = wru_bisg %>% filter(!is.na(pred.whi))
+#write.csv(wru_bisg, "file_name", row.names = FALSE)
+```
+
+```{r}
+# ZCTA perturbation will result missing ZCTA, filter out these rows
+# Use data_zp20_sp10 in fBISG and BIFSG
+# zp20 means 20% ZCTA perturbation and sp10 means 10% surname perturbation
+# This is an example of passing the 20% ZCTA perturbed data set into the chunks above
+data_zp20_sp10 = wru_bisg[, 1:(ncol(wru_bisg) - 5)] 
+```
+
+```{r}
+# fBISG
+# The input data set should be the filtered data set with no missing ZCTA
+wru_fbisg = wru::predict_race(data_zp20_sp10, 
+                              census.surname = TRUE, 
+                              census.geo = "zcta", 
+                              census.key = Sys.getenv("CENSUS_API_KEY"),
+                              census.data = get_census_data(key = Sys.getenv("CENSUS_API_KEY"),
+                                                            states = "NC", 
+                                                            sex = FALSE,
+                                                            year = "2020",
+                                                            census.geo = "zcta",
+                                                            retry = 3,
+                                                            county.list = NULL),
+                              year = "2020",
+                              retry = 3,
+                              skip_bad_geos = TRUE,
+                              model = "fBISG",
+                              impute.missing = FALSE,
+                              control = list(seed = 123))
+wru_fbisg = wru_fbisg %>% filter(!is.na(pred.whi))
+#write.csv(wru_fbisg, "file_name", row.names = FALSE)
+```  
+
+```{r}
+# BIFSG
+# Use batch if memory is used up
+n = nrow(data_zp20_sp10)
+idx1 = 1:floor(n / 2)
+idx2 = (floor(n / 2) + 1):n
+data1 = data_zp20_sp10[idx1, ]
+data2 = data_zp20_sp10[idx2, ]
+
+wru_bifsg1 = wru::predict_race(data1, 
+                               census.surname = TRUE, 
+                               census.geo = "zcta", 
+                               census.key = Sys.getenv("CENSUS_API_KEY"),
+                               census.data = get_census_data(key = Sys.getenv("CENSUS_API_KEY"), 
+                                                             states = "NC", 
+                                                             sex = FALSE,
+                                                             year = "2020",
+                                                             census.geo = "zcta",
+                                                             retry = 3,
+                                                             county.list = NULL),
+                               year = "2020",
+                               retry = 3,
+                               skip_bad_geos = TRUE,
+                               model = "BISG",
+                               impute.missing = FALSE,
+                               names.to.use = "surname, first")
+
+wru_bifsg2 = wru::predict_race(data2, 
+                               census.surname = TRUE, 
+                               census.geo = "zcta", 
+                               census.key = Sys.getenv("CENSUS_API_KEY"),
+                               census.data = get_census_data(key = Sys.getenv("CENSUS_API_KEY"),
+                                                             states = "NC", 
+                                                             sex = FALSE,
+                                                             year = "2020",
+                                                             census.geo = "zcta",
+                                                             retry = 3,
+                                                             county.list = NULL),
+                               year = "2020",
+                               retry = 3,
+                               skip_bad_geos = TRUE,
+                               model = "BISG",
+                               impute.missing = FALSE,
+                               names.to.use = "surname, first")
+
+wru_bifsg = rbind(wru_bifsg1, wru_bifsg2)
+wru_bifsg = wru_bifsg %>% filter(!is.na(pred.whi))
+#write.csv(wru_bifsg, "file_name", row.names = FALSE)
+```
+
+## ZCTA Perturbation
+
+- This is only ZCTA perturbation
+- If doing perturbation combinations, using the code above under Surname Perturbation
+
+```{r}
+# BISG
+# An example of 20% ZCTA perturbation
+data_20 = read.csv("data_zp_20.csv")
+data_20 = data_20 %>% select(-zcta) %>% rename(zcta = Swapped_zcta)
+
+wru_bisg = wru::predict_race(data_20, 
+                             census.surname = TRUE, 
+                             census.geo = "zcta", 
+                             census.key = Sys.getenv("CENSUS_API_KEY"),
+                             census.data = get_census_data(key = Sys.getenv("CENSUS_API_KEY"),
+                                                           states = "NC", 
+                                                           sex = FALSE,
+                                                           year = "2020",
+                                                           census.geo = "zcta",
+                                                           retry = 3,
+                                                           county.list = NULL),
+                             year = "2020",
+                             retry = 3,
+                             skip_bad_geos = TRUE,
+                             model = "BISG",
+                             impute.missing = FALSE)
+wru_bisg = wru_bisg %>% filter(!is.na(pred.whi))
+
+# ZCTA perturbation will result missing ZCTA, filter out these rows
+# Use data_20_new in fBISG and BIFSG
+data_20_new = wru_bisg[, 1:(ncol(wru_bisg) - 5)]
+
+#write.csv(wru_bisg, "file_name", row.names = TRUE)
+```
+
+```{r}
+# fBISG
+wru_fbisg = wru::predict_race(data_20_new, 
+                              census.surname = TRUE, 
+                              census.geo = "zcta", 
+                              census.key = Sys.getenv("CENSUS_API_KEY"),
+                              census.data = get_census_data(key = Sys.getenv("CENSUS_API_KEY"),
+                                                            states = "NC", 
+                                                            sex = FALSE,
+                                                            year = "2020",
+                                                            census.geo = "zcta",
+                                                            retry = 3,
+                                                            county.list = NULL),
+                              year = "2020",
+                              retry = 3,
+                              skip_bad_geos = TRUE,
+                              model = "fBISG",
+                              impute.missing = FALSE,
+                              control = list(seed = 123))
+wru_fbisg = wru_fbisg %>% filter(!is.na(pred.whi))
+#write.csv(wru_fbisg, "file_name", row.names = FALSE)
+```
+
+```{r}
+# BIFSG
+wru_bifsg = wru::predict_race(data_20_new, 
+                              census.surname = TRUE, 
+                              census.geo = "zcta", 
+                              census.key = Sys.getenv("CENSUS_API_KEY"),
+                              census.data = get_census_data(key = Sys.getenv("CENSUS_API_KEY"),
+                                                            states = "NC", 
+                                                            sex = FALSE,
+                                                            year = "2020",
+                                                            census.geo = "zcta",
+                                                            retry = 3,
+                                                            county.list = NULL),
+                              year = "2020",
+                              retry = 3,
+                              skip_bad_geos = TRUE,
+                              model = "BISG",
+                              impute.missing = FALSE,
+                              names.to.use = "surname, first")
+wru_bifsg = wru_bifsg %>% filter(!is.na(pred.whi))
+#write.csv(wru_bifsg, "file_name", row.names = FALSE)
+```
+
+## Weighted Estimator
+
+- Same as above
+
+```{r}
+outcome_values = c("DEM", "REP", "LIB", "IND")
+races = c("pred.whi", "pred.bla", "pred.his", "pred.asi", "pred.oth")
+matrix = matrix(NA, nrow = length(races), ncol = length(outcome_values))
+rownames(matrix) = races
+colnames(matrix) = outcome_values
+for (i in seq_along(outcome_values)) {
+  party = outcome_values[i]
+  we = weighted_estimator(wru_bifsg_sp, "party_cd", party, NULL, races, "pred")
+  matrix[, party] = round(we, 5)
+}
+pred_wes = as.data.frame(matrix)
+#write.csv(pred_wes, "file_name", row.names = TRUE)
+```
+
+```{r}
+matrix = matrix(NA, nrow = 4, ncol = 4)
+rownames(matrix) = c("pred.bla", "pred.his", "pred.asi", "pred.oth")
+colnames(matrix) = outcome_values
+for (party in outcome_values) {
+  outcome_mask = data_xyz[["party_cd"]] == party
+  df_outcome = data_xyz[outcome_mask, ]
+  n = table(df_outcome[["true_race"]])
+  d = table(data_xyz[["true_race"]])
+  we = n / d
+  race_order = c("black", "hispanic", "api", "other")
+  we = as.numeric(we[race_order])
+  names(we) = race_order
+  matrix[, party] = round(we, 5)
+}
+actual_wes = as.data.frame(matrix)
+#write.csv(actual_wes, "file_name", row.names = TRUE)
+```
+
+
+
+
