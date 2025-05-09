@@ -1,0 +1,16 @@
+# Cache
+__pycache__/
+
+# Ignore virtual environment
+env/
+.env
+venv/
+.venv
+
+# macOS
+.DS_Store
+
+# ignore secrets
+secrets/*
+
+# ignore repository specific files
